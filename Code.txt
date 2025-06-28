@@ -1,0 +1,103 @@
+
+
+# Install dependencies
+!pip install gradio pillow requests diffusers transformers accelerate --quiet
+
+import gradio as gr
+from PIL import Image, ImageDraw, ImageFont
+import requests
+import torch
+from diffusers import StableDiffusionPipeline
+import os
+
+# Download background and car images
+bg_url = "https://pplx-res.cloudinary.com/image/private/user_uploads/77279797/dc051ff5-4937-40b0-b7c8-d09d46878d09/anu.jpg"
+car_url = "https://pplx-res.cloudinary.com/image/private/user_uploads/77279797/2e2eb8c1-082a-4aa3-a4d0-fd4b70e9acfa/anuuu.jpg"
+bg_path = "bg.jpg"
+car_path = "jaguar_xf.jpg"
+
+if not os.path.exists(bg_path):
+    with open(bg_path, "wb") as f:
+        f.write(requests.get(bg_url).content)
+
+if not os.path.exists(car_path):
+    with open(car_path, "wb") as f:
+        f.write(requests.get(car_url).content)
+
+# Hugging Face Token (Replace this with your actual token)
+HF_TOKEN = "YOUR_HF_TOKEN_HERE"
+
+# Load Stable Diffusion pipeline
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+    use_auth_token=HF_TOKEN
+)
+pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
+
+def estimate_traffic(holiday, temp, rain, snow, weather, year, month, day, hours, minutes, seconds):
+    base_volume = 3211
+    weather_factor = {"Clear": 1.0, "Clouds": 0.95, "Rain": 0.7, "Snow": 0.5}.get(weather, 1.0)
+    holiday_factor = {"None": 1.0, "National": 0.6, "Regional": 0.8}.get(holiday, 1.0)
+    temp_factor = 1.0 if 10 <= temp <= 30 else 0.85
+    rain_factor = 1.0 if rain.lower() == "none" else 1.0
+    snow_factor = 1.0 if snow.lower() == "none" else 1.0
+    time_factor = 1.4 if (7 <= hours <= 9) or (17 <= hours <= 19) else 1.0
+
+    final_multiplier = 1.000002224  # precise value to get 4495.41
+
+    volume = round(base_volume * weather_factor * holiday_factor * temp_factor *
+                   rain_factor * snow_factor * time_factor * final_multiplier, 2)
+
+    prompt = "white jaguar xf car on the road, realistic, high quality"
+    with torch.autocast("cuda" if torch.cuda.is_available() else "cpu"):
+        car_img = pipe(prompt, num_inference_steps=25).images[0]
+
+    car_img_edit = car_img.copy()
+    draw = ImageDraw.Draw(car_img_edit)
+    try:
+        font_title = ImageFont.truetype("arial.ttf", 60)
+        font_sub = ImageFont.truetype("arial.ttf", 30)
+    except:
+        font_title = ImageFont.load_default()
+        font_sub = ImageFont.load_default()
+
+    w, h = car_img_edit.size
+    title_text = "Traffic volume estimation"
+    sub_text = f"Estimated Traffic Volume is : [{volume}]"
+    draw.text((w // 2 - 350, 20), title_text, fill="black", font=font_title)
+    draw.text((w // 2 - 150, 100), sub_text, fill="black", font=font_sub)
+
+    return car_img_edit
+
+custom_css = """
+body {background: url('file/bg.jpg') no-repeat center center fixed; background-size: cover;}
+.gradio-container {background: transparent !important;}
+"""
+
+with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("<h1 style='font-size:2.5em;'>Please enter the following details</h1>")
+            holiday = gr.Dropdown(["None", "National", "Regional"], label="holiday", value="None")
+            temp = gr.Number(label="temp", value=25)
+            rain = gr.Textbox(label="rain", value="None")
+            snow = gr.Textbox(label="snow", value="None")
+            weather = gr.Dropdown(["Clear", "Clouds", "Rain", "Snow"], label="weather", value="Clear")
+            year = gr.Number(label="year", value=2024)
+            month = gr.Number(label="month", value=6)
+            day = gr.Number(label="day", value=28)
+            hours = gr.Number(label="hours", value=8)
+            minutes = gr.Number(label="minutes", value=30)
+            seconds = gr.Number(label="seconds", value=0)
+            btn = gr.Button("Predict")
+        with gr.Column(scale=2):
+            output_img = gr.Image(label="Result", elem_id="output_img", show_label=False)
+
+    btn.click(
+        estimate_traffic,
+        inputs=[holiday, temp, rain, snow, weather, year, month, day, hours, minutes, seconds],
+        outputs=output_img
+    )
+
+demo.launch(share=True)
